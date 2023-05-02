@@ -1,4 +1,5 @@
 import os, cv2, wx, math
+import pickle
 import numpy as np
 import torch
 import torchvision
@@ -45,21 +46,15 @@ class MyVideoPanel(wx.ScrolledWindow):
     def evt_on_resize(self, event):
         if self.parent.control_panel.cap:
             current_position = self.parent.control_panel.video_slider.GetValue()
-            self.parent.control_panel.cap.set(cv2.CAP_PROP_POS_FRAMES, current_position)
-            _, display_frame = self.parent.control_panel.cap.read()
-            display_size = self.GetSize()
-            if display_size.GetWidth() <= 0 or display_size.GetHeight() <= 0: return
-            display_frame = self.parent.control_panel.resize_frame(display_frame, display_size.GetWidth(),
-                                                                   display_size.GetHeight())
-            self.frame = np.transpose(display_frame, (1, 2, 0))
-            self.parent.video_panel.Refresh()
-
+            self.parent.control_panel.update_display(current_position)
 
 class MyControlsPanel(wx.ScrolledWindow):
     def __init__(self, parent):
-        wx.ScrolledWindow.__init__(self, parent, id=-1, pos=wx.DefaultPosition, size=(200, 230),
+        wx.ScrolledWindow.__init__(self, parent, id=-1, pos=wx.DefaultPosition, size=(200, 260),
                                    style=wx.HSCROLL | wx.VSCROLL,
                                    name="scrolledWindow")
+        self.animal_tracking_dictionary = None
+        self.pickle_path = None
         self.SetScrollbars(1, 1, 600, 400)
         # Set up the variables that we want to capture
         self.parent = parent
@@ -81,6 +76,19 @@ class MyControlsPanel(wx.ScrolledWindow):
         self.output_directory_label = wx.TextCtrl(self, value='',
                                                   style=wx.TE_LEFT, size=(300, -1))
         self.output_directory_label.SetHint('{output directory}')
+
+
+
+        self.overlay_track_checkbox = wx.CheckBox(self, label='Overlay Track')  # Create the checkbox
+        self.overlay_track_checkbox.SetValue(False)  # Set the default to "checked"
+        self.overlay_track_checkbox.Bind(wx.EVT_CHECKBOX, self.evt_overlay_track_checkbox)
+
+        self.get_tracklet_directory_button = wx.Button(self, label='Track File Path')
+        self.get_tracklet_directory_button.SetToolTip('Optional: Location of pickle file containing track information')
+        self.get_tracklet_directory_button.Bind(wx.EVT_BUTTON, self.evt_get_tracklet)
+        self.get_tracklet_directory_label = wx.TextCtrl(self, value='',
+                                                  style=wx.TE_LEFT, size=(300, -1))
+        self.get_tracklet_directory_label.SetHint('{optional: track file}')
 
         self.resize_checkbox = wx.CheckBox(self, label='Resize Output')  # Create the checkbox
         self.resize_checkbox.SetValue(False)  # Set the default to "checked"
@@ -121,6 +129,21 @@ class MyControlsPanel(wx.ScrolledWindow):
         frame_output.Add(self.output_directory_label, flag=wx.ALIGN_CENTER)
         get_video_vertical.Add(frame_output, wx.ALIGN_CENTER_VERTICAL, wx.EXPAND)
         overall_window_vertical.Add(get_video_vertical, flag=wx.EXPAND)
+
+        overlay_track_horizontal = wx.BoxSizer(wx.HORIZONTAL)
+        overlay_track_box = wx.StaticBox(self)
+        overlay_track_options_vertical_sizer = wx.StaticBoxSizer(overlay_track_box, wx.VERTICAL)
+        overlay_track_parts_horizontal = wx.BoxSizer(wx.HORIZONTAL)
+        overlay_track_parts_horizontal.Add(self.overlay_track_checkbox, wx.CENTER)
+        overlay_track_parts_horizontal.Add(10, 0)
+        overlay_track_parts_horizontal.Add(self.get_tracklet_directory_button, 0, flag=wx.ALIGN_CENTER)
+        overlay_track_parts_horizontal.Add(10, 0)
+        overlay_track_parts_horizontal.Add(self.get_tracklet_directory_label, 0, flag=wx.ALIGN_CENTER)
+        #get_video_vertical.Add(0, 5)
+        overlay_track_options_vertical_sizer.Add(overlay_track_parts_horizontal, wx.LEFT)
+        overlay_track_horizontal.Add(overlay_track_options_vertical_sizer, wx.ALIGN_CENTER_HORIZONTAL)
+        overall_window_vertical.Add(overlay_track_horizontal, flag=wx.EXPAND)
+
         resize_video_horizontal = wx.BoxSizer(wx.HORIZONTAL)
         resize_video_box = wx.StaticBox(self)
         resize_video_options_vertical_sizer = wx.StaticBoxSizer(resize_video_box, wx.VERTICAL)
@@ -155,6 +178,8 @@ class MyControlsPanel(wx.ScrolledWindow):
         self.backward_button.Disable()
         self.forward_button.Disable()
         self.save_frame_button.Disable()
+        self.overlay_track_checkbox.Disable()
+        self.get_tracklet_directory_button.Disable()
         self.resize_widget.Disable()
         self.resize_checkbox.Disable()
         self.output_directory_button.Disable()
@@ -176,6 +201,11 @@ class MyControlsPanel(wx.ScrolledWindow):
         else:
             self.resize_widget.Disable()
 
+    def evt_overlay_track_checkbox(self, event):
+        if self.overlay_track_checkbox.GetValue():
+            self.get_tracklet_directory_button.Enable()
+        else:
+            self.get_tracklet_directory_button.Disable()
     def evt_set_resize(self, event):
         self.output_size = int(self.resize_widget.GetValue())
 
@@ -194,6 +224,7 @@ class MyControlsPanel(wx.ScrolledWindow):
             self.forward_button.Enable()
             self.resize_checkbox.Enable()
             self.output_directory_button.Enable()
+            self.overlay_track_checkbox.Enable()
             self.video_path = path
             self.get_video_label.SetValue(os.path.basename(path))
             self.cap = cv2.VideoCapture(self.video_path)
@@ -204,11 +235,35 @@ class MyControlsPanel(wx.ScrolledWindow):
             self.update_display(self.video_slider.GetValue())
         dlg.Destroy()
 
+    def evt_get_tracklet(self, event):
+        wildcard = "Track Files (*.pkl)|*.pkl"
+        dlg = wx.FileDialog(
+            self, message="Choose a Track File",
+            defaultFile="",
+            wildcard=wildcard,
+            style=wx.FD_OPEN | wx.FD_CHANGE_DIR
+        )
+        if dlg.ShowModal() == wx.ID_OK:
+            path = dlg.GetPath()
+            with open(path, 'rb') as f:
+                temp_pickle = pickle.load(f)
+            if os.path.basename(self.video_path) != temp_pickle['video_info']['filename']:
+                dlg = wx.GenericMessageDialog(None, "Track file name does not match video file!", caption='Error',
+                                              style=wx.OK | wx.CENTER)
+                dlg.ShowModal()
+                return
+            self.pickle_path = path
+            self.get_tracklet_directory_label.SetValue(os.path.basename(path))
+            self.animal_tracking_dictionary = temp_pickle
+        dlg.Destroy()
+
     def update_display(self, position):
         self.cap.set(cv2.CAP_PROP_POS_FRAMES, position)
         _, display_frame = self.cap.read()
         display_size = self.parent.video_panel.GetSize()
         if display_size.GetWidth() <= 0 or display_size.GetHeight() <= 0: return
+        if self.parent.control_panel.animal_tracking_dictionary:
+            display_frame = self.draw_frame(self.video_slider.GetValue(), display_frame)
         display_frame = self.resize_frame(display_frame, display_size.GetWidth(), display_size.GetHeight())
         self.parent.video_panel.frame = np.transpose(display_frame, (1, 2, 0))
         self.parent.video_panel.Refresh()
@@ -302,6 +357,50 @@ class MyControlsPanel(wx.ScrolledWindow):
         processed_frame = torch.nn.functional.pad(processed_frame, pad)
         return_frame = processed_frame.numpy()
         return return_frame
+
+    def draw_frame(self, frame_number, frame=None):
+        frame_temp = frame
+        for animal in self.animal_tracking_dictionary['animals']:
+            if frame_number in self.animal_tracking_dictionary['animals'][animal]['frame_number']:
+                frame_index = self.animal_tracking_dictionary['animals'][animal]['frame_number'].index(frame_number)
+                color = self.animal_tracking_dictionary['animals'][animal]['color']
+                cv2.drawContours(image=frame_temp,
+                                 contours=self.animal_tracking_dictionary['animals'][animal]['contours'][frame_index],
+                                 contourIdx=-1,
+                                 color=color,
+                                 thickness=1,
+                                 offset=(
+                                     int(self.animal_tracking_dictionary['animals'][animal]['boxes'][frame_index][0]),
+                                     int(self.animal_tracking_dictionary['animals'][animal]['boxes'][frame_index][1]))
+                                 )
+                x_org = int(self.animal_tracking_dictionary['animals'][animal]['boxes'][frame_index][0])
+                y_org = int(self.animal_tracking_dictionary['animals'][animal]['boxes'][frame_index][1]) - 5 if \
+                    int(self.animal_tracking_dictionary['animals'][animal]['boxes'][frame_index][1]) - 5 > 0 else 0
+                box_width = int(self.animal_tracking_dictionary['animals'][animal]['boxes'][frame_index][2] - \
+                                self.animal_tracking_dictionary['animals'][animal]['boxes'][frame_index][0])
+                box_height = int(self.animal_tracking_dictionary['animals'][animal]['boxes'][frame_index][3] - \
+                                 self.animal_tracking_dictionary['animals'][animal]['boxes'][frame_index][1])
+                score = round(
+                    float(self.animal_tracking_dictionary["animals"][animal]["scores"][frame_index]) * 100, 2)
+                text = f'Animal {self.animal_tracking_dictionary["animals"][animal]["animal_id"]}: ' \
+                       f'{score}'
+                animal_font_scale, animal_font_width = self.get_font_size(image_width=int(box_width),
+                                                                          image_height=int(box_height))
+                cv2.putText(img=frame_temp,
+                            text=text,
+                            org=(x_org, y_org),
+                            color=color,
+                            fontFace=cv2.FONT_HERSHEY_SIMPLEX,
+                            fontScale=animal_font_scale,
+                            thickness=animal_font_width,
+                            )
+        return frame_temp
+
+    def get_font_size(self, image_width, image_height, font_scale=2e-3, thickness_scale=5e-3):
+        font_scale = (image_height + image_width) * font_scale
+        font_scale = font_scale if font_scale > 0.5 else 0.5
+        thickness = int(math.ceil(min(image_height, image_width) * thickness_scale))
+        return font_scale, thickness
 
 
 # Run the program
