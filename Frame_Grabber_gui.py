@@ -139,7 +139,6 @@ class MyControlsPanel(wx.ScrolledWindow):
         overlay_track_parts_horizontal.Add(self.get_tracklet_directory_button, 0, flag=wx.ALIGN_CENTER)
         overlay_track_parts_horizontal.Add(10, 0)
         overlay_track_parts_horizontal.Add(self.get_tracklet_directory_label, 0, flag=wx.ALIGN_CENTER)
-        #get_video_vertical.Add(0, 5)
         overlay_track_options_vertical_sizer.Add(overlay_track_parts_horizontal, wx.LEFT)
         overlay_track_horizontal.Add(overlay_track_options_vertical_sizer, wx.ALIGN_CENTER_HORIZONTAL)
         overall_window_vertical.Add(overlay_track_horizontal, flag=wx.EXPAND)
@@ -260,6 +259,18 @@ class MyControlsPanel(wx.ScrolledWindow):
     def update_display(self, position):
         self.cap.set(cv2.CAP_PROP_POS_FRAMES, position)
         _, display_frame = self.cap.read()
+        if display_frame is None:
+            dlg = wx.GenericMessageDialog(None, 'It appears your file metadata or video is corrupted. Finding last valid frame and Adjusting range', caption='Error',
+                                          style=wx.OK | wx.CENTER)
+            dlg.ShowModal()
+            # Because the slider doesn't necessarily increment by 1,
+            # need to loop backward to find last valid frame then set the range
+            while display_frame is None:
+                position -= 1
+                self.cap.set(cv2.CAP_PROP_POS_FRAMES, position)
+                _, display_frame = self.cap.read()
+            self.video_slider.SetValue(position)
+            self.video_slider.SetRange(self.video_slider.GetRange()[0], position)
         display_size = self.parent.video_panel.GetSize()
         if display_size.GetWidth() <= 0 or display_size.GetHeight() <= 0: return
         if self.parent.control_panel.animal_tracking_dictionary:
