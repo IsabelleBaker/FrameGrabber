@@ -364,6 +364,7 @@ class MyControlsPanel(wx.ScrolledWindow):
             if frame_number in self.animal_tracking_dictionary['animals'][animal]['frame_number']:
                 frame_index = self.animal_tracking_dictionary['animals'][animal]['frame_number'].index(frame_number)
                 color = self.animal_tracking_dictionary['animals'][animal]['color']
+                color = (color[2], color[1], color[0])
                 cv2.drawContours(image=frame_temp,
                                  contours=self.animal_tracking_dictionary['animals'][animal]['contours'][frame_index],
                                  contourIdx=-1,
